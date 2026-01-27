@@ -44,10 +44,13 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
     }
 
     const pathID = randomBytes(32).toString("base64url");
-    const key = `${pathID}.mp4`;
+    let key = `${pathID}.mp4`;
     const tempFilePath = path.join("/tmp", key);
     
     await Bun.write(tempFilePath, file);
+
+    const videoAspectRatio = await getVideoAspectRatio(tempFilePath);
+    key = videoAspectRatio + "/" + key;
 
     await uploadVideoToS3(cfg, key, tempFilePath, mediaType);
 
@@ -60,6 +63,49 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
     await Bun.file(tempFilePath).delete();
 
   return respondWithJSON(200, mediaMetadata);
+}
+
+
+export async function getVideoAspectRatio(filePath: string) {
+    const proc = Bun.spawn([
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "json",
+        filePath,
+    ], {
+        stderr: "pipe",
+        stdout: "pipe",
+    });
+
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+        throw new Error(await new Response(proc.stderr).text());
+    }
+
+    const stdoutText: string = await new Response(proc.stdout).text();
+    const stdoutObj = JSON.parse(stdoutText);
+    const [stream] = stdoutObj["streams"];
+    const videoWidth = stream["width"];
+    const videoHeight = stream["height"];
+    
+    const ratio = Math.floor((videoWidth / videoHeight), -1);
+
+    switch (ratio) {
+        case Math.floor((16 / 9), -1):
+            return "landscape";
+
+        case Math.floor((9 / 16), -1):
+            return "portrait";
+
+        default:
+            return "other";
+    }
 }
 
 
