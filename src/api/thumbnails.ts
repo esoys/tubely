@@ -1,3 +1,4 @@
+import { randomBytes } from "crypto";
 import { getBearerToken, validateJWT } from "../auth";
 import { respondWithJSON } from "./json";
 import { getVideo, updateVideo } from "../db/videos";
@@ -67,7 +68,8 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
         throw new BadRequestError("Wrong file format");
     }
     const mediaData = await file.arrayBuffer();
-    const filePath = path.join(cfg.assetsRoot, `${videoId}.${mediaType}`);
+    const pathID = randomBytes(32).toString("base64url");
+    const filePath = path.join(cfg.assetsRoot, `${pathID}.${mediaType}`);
     
     Bun.write(filePath, mediaData);
 
@@ -76,7 +78,7 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
         throw new UserForbiddenError("Access to resource denied");
     }
  
-    mediaMetadata.thumbnailURL = `http://localhost:${cfg.port}/assets/${videoId}.${mediaType}`;
+    mediaMetadata.thumbnailURL = `http://localhost:${cfg.port}/assets/${pathID}.${mediaType}`;
 
     await updateVideo(cfg.db, mediaMetadata);
 
