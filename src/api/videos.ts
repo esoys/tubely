@@ -3,6 +3,7 @@ import { randomBytes } from "crypto";
 import path from "node:path";
 import { UserForbiddenError, BadRequestError } from "./errors";
 import { getVideo } from "../db/videos";
+import type { Video } from "../db/videos"
 import { type ApiConfig } from "../config";
 import type { BunRequest } from "bun";
 import { getBearerToken, validateJWT } from "../auth";
@@ -19,12 +20,12 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
     const token = getBearerToken(req.headers);
     const userID = validateJWT(token, cfg.jwtSecret);
 
-    let mediaMetadata = getVideo(cfg.db, videoId);
-    if (!mediaMetadata) {
+    let video = getVideo(cfg.db, videoId);
+    if (!video) {
         throw new BadRequestError("Video not found");
     }
 
-    if (mediaMetadata.userID !== userID) {
+    if (video.userID !== userID) {
         throw new UserForbiddenError("Access to resource denied");
     }
 
@@ -45,25 +46,44 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
 
     const pathID = randomBytes(32).toString("base64url");
     let key = `${pathID}.mp4`;
-    const tempFilePath = path.join("/tmp", key);
+    let tempFilePath = path.join("/tmp", key);
     
     await Bun.write(tempFilePath, file);
+    tempFilePath = await processVideoForFasterStart(tempFilePath);
 
     const videoAspectRatio = await getVideoAspectRatio(tempFilePath);
     key = videoAspectRatio + "/" + key;
 
     await uploadVideoToS3(cfg, key, tempFilePath, mediaType);
 
-    const videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${key}`;
+    const videoURL = key;
     console.log(videoURL);
-    mediaMetadata.videoURL = videoURL;
+    video.videoURL = videoURL;
 
-    await updateVideo(cfg.db, mediaMetadata);
+    await updateVideo(cfg.db, video);
+
+    video = await dbVideoToSignedVideo(cfg, video);
 
     await Bun.file(tempFilePath).delete();
 
-  return respondWithJSON(200, mediaMetadata);
+  return respondWithJSON(200, video);
 }
+
+
+export async function generatePresignedURL(cfg: ApiConfig, key: string, expireTime: number) {
+    const presignedURL = await cfg.s3Client.presign(key, { expiresIn: expireTime });
+    return presignedURL;
+}
+
+
+export async function dbVideoToSignedVideo(cfg: ApiConfig, video: Video) {
+    if (!video.videoURL) {
+        return video;
+    }
+    const newVideoURL = await generatePresignedURL(cfg, video.videoURL, 3600);
+    video.videoURL = newVideoURL;
+    return video;
+} 
 
 
 export async function getVideoAspectRatio(filePath: string) {
@@ -106,6 +126,34 @@ export async function getVideoAspectRatio(filePath: string) {
         default:
             return "other";
     }
+}
+
+
+export async function processVideoForFasterStart(inputFilePath: string) {
+    const outpoutFilePath = inputFilePath + ".processed"
+    const proc = Bun.spawn([
+        "ffmpeg",
+        "-i",
+        inputFilePath,
+        "-movflags",
+        "faststart",
+        "-map_metadata",
+        "0",
+        "-codec",
+        "copy",
+        "-f",
+        "mp4",
+        outpoutFilePath,
+    ], {
+        stderr: "pipe",
+    });
+
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+        throw new Error(await new Response(proc.stdout).text());
+    }
+
+    return outpoutFilePath;
 }
 
 
