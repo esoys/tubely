@@ -56,34 +56,17 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
 
     await uploadVideoToS3(cfg, key, tempFilePath, mediaType);
 
-    const videoURL = key;
+    const videoURL = `${cfg.s3CfDistribution}/${key}`;
     console.log(videoURL);
     video.videoURL = videoURL;
 
     await updateVideo(cfg.db, video);
-
-    video = await dbVideoToSignedVideo(cfg, video);
 
     await Bun.file(tempFilePath).delete();
 
   return respondWithJSON(200, video);
 }
 
-
-export async function generatePresignedURL(cfg: ApiConfig, key: string, expireTime: number) {
-    const presignedURL = await cfg.s3Client.presign(key, { expiresIn: expireTime });
-    return presignedURL;
-}
-
-
-export async function dbVideoToSignedVideo(cfg: ApiConfig, video: Video) {
-    if (!video.videoURL) {
-        return video;
-    }
-    const newVideoURL = await generatePresignedURL(cfg, video.videoURL, 3600);
-    video.videoURL = newVideoURL;
-    return video;
-} 
 
 
 export async function getVideoAspectRatio(filePath: string) {
